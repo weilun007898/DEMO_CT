@@ -3,8 +3,8 @@ services:
     name: order-assistant-demo
     env: python
     plan: free
-    buildCommand: pip install -r DEMO_CT/requirements.txt
-    startCommand: uvicorn DEMO_CT.view:app --host 0.0.0.0 --port $PORT
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn view:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: OPENAI_API_KEY
         sync: false
