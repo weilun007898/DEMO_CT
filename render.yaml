@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: order-assistant-demo
+    env: python
+    plan: free
+    buildCommand: pip install -r DEMO_CT/requirements.txt
+    startCommand: uvicorn DEMO_CT.view:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: FIREBASE_RTDB_URL
+        sync: false
+      - key: FIREBASE_SERVICE_ACCOUNT_JSON
+        sync: false
+
