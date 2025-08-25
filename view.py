@@ -533,8 +533,6 @@ def call_openai(messages: List[Dict[str, Any]]):
     payload: Dict[str, Any] = {
         "model": model,
         "messages": _sanitize_messages(messages),
-        "tools": TOOLS,
-        "tool_choice": "auto",
     }
 
     # GPT-5 family expects 'max_completion_tokens' and some variants may reject sampling params
@@ -542,9 +540,13 @@ def call_openai(messages: List[Dict[str, Any]]):
         payload["max_completion_tokens"] = max_tokens
         if model != "gpt-5-nano":
             payload["temperature"] = 0.2
+            payload["tools"] = TOOLS
+            payload["tool_choice"] = "auto"
     else:
         payload["max_tokens"] = max_tokens
         payload["temperature"] = 0.2
+        payload["tools"] = TOOLS
+        payload["tool_choice"] = "auto"
 
     resp = client.chat.completions.create(**payload)
     return resp
