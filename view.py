@@ -530,14 +530,23 @@ def call_openai(messages: List[Dict[str, Any]]):
     # Allow tuning the model and token budget via env vars
     model = os.getenv("OPENAI_MODEL", "gpt-5-nano")
     max_tokens = int(os.getenv("OPENAI_MAX_TOKENS", "800"))
-    resp = client.chat.completions.create(
-        model=model,
-        temperature=0.2,
-        max_tokens=max_tokens,
-        messages=_sanitize_messages(messages),
-        tools=TOOLS,
-        tool_choice="auto"
-    )
+    payload: Dict[str, Any] = {
+        "model": model,
+        "messages": _sanitize_messages(messages),
+        "tools": TOOLS,
+        "tool_choice": "auto",
+    }
+
+    # GPT-5 family expects 'max_completion_tokens' and some variants may reject sampling params
+    if str(model).startswith("gpt-5"):
+        payload["max_completion_tokens"] = max_tokens
+        if model != "gpt-5-nano":
+            payload["temperature"] = 0.2
+    else:
+        payload["max_tokens"] = max_tokens
+        payload["temperature"] = 0.2
+
+    resp = client.chat.completions.create(**payload)
     return resp
 
 def chat_step(session_id: str, user_message: str) -> str:
