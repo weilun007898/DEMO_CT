@@ -1,6 +1,6 @@
 fastapi
 uvicorn[standard]
-openai>=1.30.0
+openai>=1.40.0
 firebase-admin
 pydantic
 python-dotenv

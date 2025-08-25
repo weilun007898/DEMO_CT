@@ -528,7 +528,7 @@ def _sanitize_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 def call_openai(messages: List[Dict[str, Any]]):
     # Allow tuning the model and token budget via env vars
-    model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+    model = os.getenv("OPENAI_MODEL", "gpt-5-nano")
     max_tokens = int(os.getenv("OPENAI_MAX_TOKENS", "800"))
     resp = client.chat.completions.create(
         model=model,
