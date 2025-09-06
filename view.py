@@ -56,11 +56,12 @@ def get_system_prompt() -> str:
     product_list = []
     for product in products:
         sku = product.get("sku", product.get("id", ""))
-        name = product.get("name", "")
+        # Get name from either "Name" (Firebase field) or "name" (fallback)
+        name = product.get("Name", product.get("name", ""))
         if sku and name:
-            product_list.append(f"- {name} {sku}")
+            product_list.append(f"- {name} (SKU: {sku})")
         elif sku:
-            product_list.append(f"- {sku}")
+            product_list.append(f"- SKU: {sku}")
     
     product_section = "\n".join(product_list) if product_list else "No products available"
     
@@ -79,7 +80,11 @@ Ask for missing details (e.g., customer name/email, shipping address, SKU, quant
 Summarize critical changes (e.g., address changes) if the user looks uncertain.
 Keep replies concise and helpful.
 
-IMPORTANT: When customers ask about specific products or want to see product details, include the product image by using HTML img tags with the format: <img src="/product/{{SKU}}/image" alt="{{Product Name}}" style="max-width: 200px; height: auto; border-radius: 8px; margin: 10px 0;"> 
+IMPORTANT: When customers ask about specific products or want to see product details:
+1. Always mention the full product name from the database (e.g., "豹纹内裤", "Polo T", "Ultraman 内裤")
+2. Include the product image using HTML img tags with the format: <img src="/product/{{SKU}}/image" alt="{{Product Name}}" style="max-width: 200px; height: auto; border-radius: 8px; margin: 10px 0;">
+3. Use the exact product names as they appear in the database - do not translate or modify them
+4. When showing product details, always include both the product name and SKU for clarity
 
 Available Products:
 {product_section}
@@ -232,6 +237,20 @@ def get_product_by_sku(sku: str) -> Optional[Dict[str, Any]]:
         if product.get("sku") == sku or product.get("id") == sku:
             return product
     return None
+
+def get_product_details(sku: str) -> Optional[Dict[str, Any]]:
+    """Get detailed product information including name and image availability."""
+    product = get_product_by_sku(sku)
+    if not product:
+        return None
+    
+    return {
+        "id": product.get("id"),
+        "sku": product.get("sku"),
+        "name": product.get("Name", product.get("name", "")),
+        "has_image": bool(product.get("Image") or product.get("image")),
+        "image_url": f"/product/{sku}/image" if product.get("Image") or product.get("image") else None
+    }
 
 def validate_sku(sku: str) -> bool:
     """Validate if a SKU exists in the database."""
@@ -770,7 +789,7 @@ def get_product_info(sku: str):
         product_info = {
             "id": product.get("id"),
             "sku": product.get("sku"),
-            "name": product.get("Name") or product.get("name"),
+            "name": product.get("Name") or product.get("name", ""),
             "has_image": bool(product.get("Image") or product.get("image"))
         }
         return product_info
@@ -787,11 +806,22 @@ def get_all_products_api():
             product_info = {
                 "id": product.get("id"),
                 "sku": product.get("sku"),
-                "name": product.get("Name") or product.get("name"),
+                "name": product.get("Name") or product.get("name", ""),
                 "has_image": bool(product.get("Image") or product.get("image"))
             }
             product_list.append(product_info)
         return {"products": product_list}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+@app.get("/product/{sku}/details")
+def get_product_details_api(sku: str):
+    """Get detailed product information including name and image URL."""
+    try:
+        product_details = get_product_details(sku)
+        if not product_details:
+            return JSONResponse({"error": "Product not found"}, status_code=404)
+        return product_details
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
 
