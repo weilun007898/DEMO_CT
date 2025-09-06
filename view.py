@@ -48,13 +48,30 @@ from firebase_admin import credentials, db
 # ---------------------------
 SESSIONS: Dict[str, List[Dict[str, Any]]] = {}
 
-SYSTEM_PROMPT = """You are an order assistant for a lens supplier.
+def get_system_prompt() -> str:
+    """Generate system prompt with current product information from database."""
+    products = get_all_products()
+    
+    # Build product list for the prompt
+    product_list = []
+    for product in products:
+        sku = product.get("sku", product.get("id", ""))
+        name = product.get("name", "")
+        if sku and name:
+            product_list.append(f"- {name} {sku}")
+        elif sku:
+            product_list.append(f"- {sku}")
+    
+    product_section = "\n".join(product_list) if product_list else "No products available"
+    
+    return f"""You are an order assistant for a lens supplier.
 You can:
 - Register/create customers
 - Place orders
 - Modify existing orders (add/remove items, change quantities, change shipping address)
 - Update a customer's default address
 - Provide order status
+- Show product images when customers ask about specific products
 
 Use the provided tools (functions) whenever the user request matches a DB action.
 If the user asks to "register", "sign up", or "create an account", treat it as customer creation and call create_customer. Ask for missing details like name, email, and address.
@@ -62,10 +79,10 @@ Ask for missing details (e.g., customer name/email, shipping address, SKU, quant
 Summarize critical changes (e.g., address changes) if the user looks uncertain.
 Keep replies concise and helpful.
 
-Known SKUs (demo):
-- 豹纹短裙 003
-- POLO T 007
-- Ultraman 内裤 008
+IMPORTANT: When customers ask about specific products or want to see product details, include the product image by using HTML img tags with the format: <img src="/product/{{SKU}}/image" alt="{{Product Name}}" style="max-width: 200px; height: auto; border-radius: 8px; margin: 10px 0;"> 
+
+Available Products:
+{product_section}
 
 Assume currency is SGD. Payments and taxes handled elsewhere.
 """
@@ -129,6 +146,9 @@ def customers_ref():
 def orders_ref():
     return db.reference("orders")
 
+def products_ref():
+    return db.reference("Prodcut")  # Note: keeping the typo as it exists in the database
+
 def get_customer_by_id(customer_id: str) -> Optional[Dict[str, Any]]:
     data = customers_ref().child(customer_id).get()
     if not data:
@@ -175,6 +195,57 @@ def find_customer_by_name_address(name: str, address: str) -> Optional[Dict[str,
             cust["id"] = cid
             return cust
     return None
+
+def get_all_products() -> List[Dict[str, Any]]:
+    """Fetch all products from the database and return them as a list."""
+    try:
+        products_data = products_ref().get() or {}
+        products = []
+        for product_id, product_info in products_data.items():
+            if isinstance(product_info, dict):
+                product = dict(product_info)
+                product["id"] = product_id
+                product["sku"] = product_id  # Use product_id as SKU
+                products.append(product)
+            else:
+                # Handle case where product_info is just a string (product name)
+                products.append({
+                    "id": product_id,
+                    "name": str(product_info),
+                    "sku": product_id,
+                    "image": None
+                })
+        return products
+    except Exception as e:
+        print(f"Error fetching products: {e}")
+        return []
+
+def get_available_skus() -> List[str]:
+    """Get list of available SKUs from the database."""
+    products = get_all_products()
+    return [product.get("sku", product.get("id", "")) for product in products if product.get("sku") or product.get("id")]
+
+def get_product_by_sku(sku: str) -> Optional[Dict[str, Any]]:
+    """Get a specific product by SKU."""
+    products = get_all_products()
+    for product in products:
+        if product.get("sku") == sku or product.get("id") == sku:
+            return product
+    return None
+
+def validate_sku(sku: str) -> bool:
+    """Validate if a SKU exists in the database."""
+    available_skus = get_available_skus()
+    return sku in available_skus
+
+def validate_order_items(items: List[Dict[str, Any]]) -> List[str]:
+    """Validate order items and return list of invalid SKUs."""
+    invalid_skus = []
+    for item in items:
+        sku = item.get("sku", "")
+        if not validate_sku(sku):
+            invalid_skus.append(sku)
+    return invalid_skus
 
 def find_or_create_customer(name: Optional[str], email: Optional[str], address: Optional[str]) -> Dict[str, Any]:
     # Normalize inputs to reduce duplicate records caused by whitespace/case
@@ -224,6 +295,13 @@ def update_customer_address(customer_id: str, new_address: str) -> Dict[str, Any
 def create_order(customer_id: str, items: List[Dict[str, Any]], shipping_address: Optional[str]) -> Dict[str, Any]:
     if not items:
         raise ValueError("Items cannot be empty.")
+    
+    # Validate SKUs
+    invalid_skus = validate_order_items(items)
+    if invalid_skus:
+        available_skus = get_available_skus()
+        raise ValueError(f"Invalid SKUs: {', '.join(invalid_skus)}. Available SKUs: {', '.join(available_skus)}")
+    
     if shipping_address is None:
         cust = get_customer_by_id(customer_id)
         shipping_address = (cust or {}).get("address", "")
@@ -448,6 +526,21 @@ def tool_modify_order(args: Dict[str, Any]) -> Dict[str, Any]:
     order = get_order(order_id)
     current_items = {i["sku"]: int(i["quantity"]) for i in (order.get("items") or [])}
 
+    # Validate new items being added
+    if add_items:
+        invalid_skus = validate_order_items(add_items)
+        if invalid_skus:
+            available_skus = get_available_skus()
+            raise ValueError(f"Invalid SKUs in add_items: {', '.join(invalid_skus)}. Available SKUs: {', '.join(available_skus)}")
+
+    # Validate items being updated
+    if updates:
+        update_items = [{"sku": upd["sku"], "quantity": upd["quantity"]} for upd in updates]
+        invalid_skus = validate_order_items(update_items)
+        if invalid_skus:
+            available_skus = get_available_skus()
+            raise ValueError(f"Invalid SKUs in update_quantities: {', '.join(invalid_skus)}. Available SKUs: {', '.join(available_skus)}")
+
     # Add items
     for it in add_items:
         sku = it["sku"]
@@ -514,7 +607,13 @@ TOOL_IMPLS = {
 # -----------------------
 def ensure_session(session_id: str):
     if session_id not in SESSIONS:
-        SESSIONS[session_id] = [{"role": "system", "content": SYSTEM_PROMPT}]
+        SESSIONS[session_id] = [{"role": "system", "content": get_system_prompt()}]
+
+def refresh_system_prompt_for_session(session_id: str):
+    """Refresh the system prompt for an existing session with current product data."""
+    if session_id in SESSIONS:
+        # Update the first message (system prompt) with current product data
+        SESSIONS[session_id][0] = {"role": "system", "content": get_system_prompt()}
 
 def _sanitize_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Ensure every message has a string content (no nulls) before sending to OpenAI."""
@@ -621,6 +720,80 @@ class ChatOut(BaseModel):
 def health():
     ok = (client is not None) and bool(firebase_admin._apps)
     return {"ok": ok}
+
+@app.post("/refresh-products")
+def refresh_products():
+    """Refresh product data for all active sessions."""
+    try:
+        for session_id in SESSIONS:
+            refresh_system_prompt_for_session(session_id)
+        return {"ok": True, "message": "Product data refreshed for all sessions"}
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+@app.get("/product/{sku}/image")
+def get_product_image(sku: str):
+    """Get product image by SKU."""
+    try:
+        product = get_product_by_sku(sku)
+        if not product:
+            return JSONResponse({"error": "Product not found"}, status_code=404)
+        
+        image_data = product.get("Image") or product.get("image")
+        if not image_data:
+            return JSONResponse({"error": "No image available for this product"}, status_code=404)
+        
+        # Parse the data URI to get content type and base64 data
+        if image_data.startswith("data:"):
+            header, data = image_data.split(",", 1)
+            content_type = header.split(":")[1].split(";")[0]
+            import base64
+            image_bytes = base64.b64decode(data)
+            return Response(content=image_bytes, media_type=content_type)
+        else:
+            # Assume it's raw base64 data
+            import base64
+            image_bytes = base64.b64decode(image_data)
+            return Response(content=image_bytes, media_type="image/jpeg")
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+@app.get("/product/{sku}")
+def get_product_info(sku: str):
+    """Get product information by SKU."""
+    try:
+        product = get_product_by_sku(sku)
+        if not product:
+            return JSONResponse({"error": "Product not found"}, status_code=404)
+        
+        # Return product info without the large image data
+        product_info = {
+            "id": product.get("id"),
+            "sku": product.get("sku"),
+            "name": product.get("Name") or product.get("name"),
+            "has_image": bool(product.get("Image") or product.get("image"))
+        }
+        return product_info
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+@app.get("/products")
+def get_all_products_api():
+    """Get all products with basic info (without image data)."""
+    try:
+        products = get_all_products()
+        product_list = []
+        for product in products:
+            product_info = {
+                "id": product.get("id"),
+                "sku": product.get("sku"),
+                "name": product.get("Name") or product.get("name"),
+                "has_image": bool(product.get("Image") or product.get("image"))
+            }
+            product_list.append(product_info)
+        return {"products": product_list}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
 
 @app.post("/chat", response_model=ChatOut)
 def chat(incoming: ChatIn):
@@ -747,6 +920,14 @@ body {
   white-space: pre-wrap;
   word-wrap: break-word;
 }
+.msg .bubble img {
+  max-width: 200px;
+  height: auto;
+  border-radius: 8px;
+  margin: 10px 0;
+  display: block;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+}
 .msg.user .bubble { background: #303b70; border: 1px solid #3b4a8a; }
 .msg.assistant .bubble { background: #1a2247; border: 1px solid #243062; }
 .msg.system .bubble {
@@ -823,7 +1004,14 @@ JS_CONTENT = """(function () {
     const row = el("div", `msg ${role}`);
     const avatar = el("div", "avatar");
     const bubble = el("div", "bubble");
-    bubble.textContent = content;
+    
+    // Check if content contains HTML (like img tags)
+    if (content.includes('<img') || content.includes('<br>') || content.includes('<strong>') || content.includes('<em>')) {
+      bubble.innerHTML = content;
+    } else {
+      bubble.textContent = content;
+    }
+    
     row.appendChild(avatar);
     row.appendChild(bubble);
     chat.appendChild(row);
