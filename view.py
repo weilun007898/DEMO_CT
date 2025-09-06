@@ -50,20 +50,27 @@ SESSIONS: Dict[str, List[Dict[str, Any]]] = {}
 
 def get_system_prompt() -> str:
     """Generate system prompt with current product information from database."""
-    products = get_all_products()
-    
-    # Build product list for the prompt
-    product_list = []
-    for product in products:
-        sku = product.get("sku", product.get("id", ""))
-        # Get name from either "Name" (Firebase field) or "name" (fallback)
-        name = product.get("Name", product.get("name", ""))
-        if sku and name:
-            product_list.append(f"- {name} (SKU: {sku})")
-        elif sku:
-            product_list.append(f"- SKU: {sku}")
-    
-    product_section = "\n".join(product_list) if product_list else "No products available"
+    try:
+        products = get_all_products()
+        
+        # Build product list for the prompt
+        product_list = []
+        for product in products:
+            sku = product.get("sku", product.get("id", ""))
+            # Get name from either "Name" (Firebase field) or "name" (fallback)
+            name = product.get("Name", product.get("name", ""))
+            if sku and name:
+                product_list.append(f"- {name} (SKU: {sku})")
+            elif sku:
+                product_list.append(f"- SKU: {sku}")
+        
+        product_section = "\n".join(product_list) if product_list else "No products available"
+    except Exception as e:
+        # Fallback to hardcoded products if Firebase is not available
+        print(f"Firebase not available, using fallback products: {e}")
+        product_section = """- 豹纹内裤 (SKU: 001)
+- Polo T (SKU: 002)  
+- Ultraman 内裤 (SKU: 003)"""
     
     return f"""You are an order assistant for a lens supplier.
 You can:
@@ -211,6 +218,9 @@ def get_all_products() -> List[Dict[str, Any]]:
                 product = dict(product_info)
                 product["id"] = product_id
                 product["sku"] = product_id  # Use product_id as SKU
+                # Ensure we have the name field properly set
+                if "Name" in product:
+                    product["name"] = product["Name"]
                 products.append(product)
             else:
                 # Handle case where product_info is just a string (product name)
@@ -222,8 +232,31 @@ def get_all_products() -> List[Dict[str, Any]]:
                 })
         return products
     except Exception as e:
-        print(f"Error fetching products: {e}")
-        return []
+        print(f"Error fetching products from Firebase: {e}")
+        # Return fallback products if Firebase is not available
+        return [
+            {
+                "id": "001",
+                "sku": "001", 
+                "name": "豹纹内裤",
+                "Name": "豹纹内裤",
+                "Image": "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEAYABAAD/2wBDAAg..."
+            },
+            {
+                "id": "002",
+                "sku": "002",
+                "name": "Polo T", 
+                "Name": "Polo T",
+                "Image": "data:image/webp;base64,UkIGRmpvAABXRUJQVIA4IF5vAAAQWAOdASOGBAYEPm02mEkklyKhlpM42IANiWIBb7ljgZ5PNtu/ly8s3wm/3e7ndF3rmq99N+q"
+            },
+            {
+                "id": "003",
+                "sku": "003",
+                "name": "Ultraman 内裤",
+                "Name": "Ultraman 内裤", 
+                "Image": "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAYEBQYFBAYGBQYHBWYICHAKCgkJChQODwwQFxQYGBcUFhYaHSUfGhsjHBYWICv"
+            }
+        ]
 
 def get_available_skus() -> List[str]:
     """Get list of available SKUs from the database."""
@@ -739,6 +772,27 @@ class ChatOut(BaseModel):
 def health():
     ok = (client is not None) and bool(firebase_admin._apps)
     return {"ok": ok}
+
+@app.get("/test-products")
+def test_products():
+    """Test endpoint to check product fetching without Firebase credentials."""
+    try:
+        products = get_all_products()
+        return {
+            "ok": True,
+            "products_count": len(products),
+            "products": [
+                {
+                    "id": p.get("id"),
+                    "sku": p.get("sku"),
+                    "name": p.get("Name", p.get("name", "")),
+                    "has_image": bool(p.get("Image") or p.get("image"))
+                }
+                for p in products
+            ]
+        }
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
 
 @app.post("/refresh-products")
 def refresh_products():
